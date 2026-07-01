@@ -9,8 +9,12 @@ import lombok.RequiredArgsConstructor;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
 import org.springframework.security.core.context.SecurityContextHolder;
+import org.springframework.security.core.userdetails.UserDetails;
+import org.springframework.security.core.userdetails.UserDetailsService;
+import org.springframework.security.web.authentication.WebAuthenticationDetailsSource;
 import org.springframework.stereotype.Component;
 import org.springframework.web.filter.OncePerRequestFilter;
+
 import java.io.IOException;
 
 @Component
@@ -19,6 +23,7 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
 
     private final JwtUtils jwtUtils;
     private final StringRedisTemplate redisTemplate;
+    private final UserDetailsService userDetailsService;
 
     @Override
     protected void doFilterInternal(HttpServletRequest request, HttpServletResponse response, FilterChain filterChain)
@@ -32,25 +37,32 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
 
         String jwt = authHeader.substring(7);
         try {
-            String jti = jwtUtils.extractJti(jwt);
-
-            // 💡 核心亮点：查询 Redis 黑名单，解决 JWT 无法主动失效的痛点
-            if (Boolean.TRUE.equals(redisTemplate.hasKey("jwt:blacklist:" + jti))) {
-                response.setStatus(HttpServletResponse.SC_UNAUTHORIZED);
-                response.setContentType("application/json;charset=utf-8");
-                response.getWriter().write("{\"code\":401, \"message\":\"Token已被吊销，请重新登录\"}");
-                return;
-            }
-
             String username = jwtUtils.extractUsername(jwt);
+
             if (username != null && SecurityContextHolder.getContext().getAuthentication() == null) {
-                // 简化处理，实际应加载用户权限
+                // 检查黑名单
+                String jti = jwtUtils.extractJti(jwt);
+                if (redisTemplate.hasKey("jwt:blacklist:" + jti)) {
+                    response.setStatus(HttpServletResponse.SC_UNAUTHORIZED);
+                    response.setContentType("application/json;charset=utf-8");
+                    response.getWriter().write("{\"code\":401,\"message\":\"Token已被吊销，请重新登录\"}");
+                    return;
+                }
+
+                // 从 DB 加载完整用户信息（包含权限）
+                UserDetails userDetails = userDetailsService.loadUserByUsername(username);
+                if (!userDetails.isEnabled()) {
+                    throw new RuntimeException("用户已被禁用");
+                }
+
                 UsernamePasswordAuthenticationToken authToken =
-                        new UsernamePasswordAuthenticationToken(username, null, null);
+                        new UsernamePasswordAuthenticationToken(userDetails, null, userDetails.getAuthorities());
+                authToken.setDetails(new WebAuthenticationDetailsSource().buildDetails(request));
                 SecurityContextHolder.getContext().setAuthentication(authToken);
             }
         } catch (Exception e) {
-            // Token 过期或伪造
+            // Token 过期、伪造或用户状态异常
+            SecurityContextHolder.clearContext();
         }
         filterChain.doFilter(request, response);
     }

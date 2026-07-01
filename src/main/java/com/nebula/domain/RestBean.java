@@ -5,6 +5,11 @@ public record RestBean<T>(int code, String message, T data) {
     public static <T> RestBean<T> success(T data) {
         return new RestBean<>(200, "操作成功", data);
     }
+
+    public static <T> RestBean<T> success(String message, T data) {
+        return new RestBean<>(200, message, data);
+    }
+
     public static <T> RestBean<T> error(int code, String message) {
         return new RestBean<>(code, message, null);
     }
